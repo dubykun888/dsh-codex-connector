@@ -227,7 +227,7 @@ test('fails early on missing required input and unfilled placeholders', () => {
 
 process.stdout.write('\nevents\n')
 
-// Verbatim shape captured from a real run (DESIGN.md §1.2.1). Note every `error`
+// Verbatim shape captured from a real run (DESIGN.md §1.5). Note every `error`
 // line here is a PLAIN transport event: in the measured stream even the
 // "Falling back from WebSockets..." notice arrives as `{"type":"error",...}`,
 // NOT as an item. A completed item is what a real, run-failing error looks like.

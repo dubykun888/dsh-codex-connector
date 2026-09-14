@@ -18,9 +18,10 @@
 //
 // Every write is backed up, and a failure restores the backups.
 
-const fs = require('node:fs')
-const os = require('node:os')
-const path = require('node:path')
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 
 const ROW_ID = 'tool-codex-connector'
 const PKG_NAME = 'dsh-codex-connector'
@@ -33,7 +34,7 @@ const opt = (n, d) => {
   return i >= 0 && args[i + 1] ? args[i + 1] : d
 }
 
-const selfDir = path.resolve(__dirname, '..')
+const selfDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const dshHome = process.env.DSH_HOME || path.join(os.homedir(), '.dsh')
 const profile = opt('profile', 'web')
 const presetId = opt('preset', null)
@@ -152,12 +153,12 @@ try {
   const patchBackup = backup(patchFile)
   backups.push([patchFile, patchBackup])
   let text = fs.existsSync(patchFile) ? fs.readFileSync(patchFile, 'utf8') : ''
-  const row = [
-    `- id: ${ROW_ID}`,
-    `  name: '${PKG_NAME}'`,
-    '  config:',
-    '    defaultWorkspace: !!js process.cwd()',
-  ].join('\n')
+  // No `defaultWorkspace` here on purpose: pinning it to the Host's cwd would
+  // resolve every call against the directory DSH happened to start in, instead
+  // of the calling session's workspace. The tool derives the workspace from its
+  // own call context and only falls back to process.cwd() when nothing else
+  // supplies one.
+  const row = [`- id: ${ROW_ID}`, `  name: '${PKG_NAME}'`].join('\n')
 
   if (uninstall) {
     text = removeRow(text, ROW_ID)
@@ -222,12 +223,24 @@ try {
 // ------------------------------------------------------------------- helpers --
 
 function appendRow(text, rowYaml) {
-  const trimmed = text.replace(/\s*$/, '')
-  // Files that are just an empty loader list `[]` need the bracket removed.
-  if (trimmed === '[]') {
-    return `${rowYaml}\n`
+  // A fresh profile patch file is an EMPTY loader list written as `[]`, usually
+  // below a comment header. Appending a block sequence after that `[]` produces
+  // invalid YAML (two root nodes), so the empty-list marker must be removed
+  // wherever it appears — not only when the file is exactly "[]".
+  const lines = text.split(/\r?\n/)
+  const kept = []
+  let removedEmptyList = false
+  for (const line of lines) {
+    if (/^\s*\[\s*\]\s*$/.test(line)) {
+      removedEmptyList = true
+      continue
+    }
+    kept.push(line)
   }
-  return `${trimmed}\n\n${rowYaml}\n`
+  const body = kept.join('\n').replace(/\s*$/, '')
+  if (body === '') return `${rowYaml}\n`
+  if (removedEmptyList) return `${body}\n\n${rowYaml}\n`
+  return `${body}\n\n${rowYaml}\n`
 }
 
 function removeRow(text, id) {

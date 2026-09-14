@@ -12,7 +12,8 @@
   "dependencies": {},
   "scripts": {
     "selftest": "node scripts/selftest.cjs",
-    "live-check": "node scripts/live-check.cjs"
+    "live-check": "node scripts/live-check.cjs",
+    "verify-install": "node scripts/verify-install.mjs"
   },
   "dsh": {
     "kind": "plugin"

@@ -2,7 +2,7 @@
 
 把 **Codex CLI** 接到 **DeepSeek Harness** 上：让 DSH 通过对话或自动路由调用 Codex 做功能设计、出图、产出美术素材、代码评审等，并把产物回收进工作区。
 
-设计说明见仓库外的 `../DESIGN.md`。本文件是使用与排错手册。
+架构决策、实测数据与自审记录见同仓的 `DESIGN.md`。本文件是使用与排错手册。
 
 ---
 
@@ -46,6 +46,15 @@ node scripts/install.mjs --profile web --uninstall --apply
 - `$DSH_HOME/profiles/<profile>/package.json` —— 增加一条 `link:` 依赖
 - `$DSH_HOME/profiles/<profile>/cordis.patch.yml` —— 增加一行 `tool-codex-connector`
 - **绝不**修改 shipped bundle（`dsh-base` / `dsh-web-app`）或 shipped preset
+
+安装后可以验证（**必须在该 profile 目录里运行**，这样模块解析基准与加载器一致）：
+
+```bash
+cd "$DSH_HOME/profiles/web"
+node <本仓库>/scripts/verify-install.mjs
+```
+
+它回答四个安装本身无法确认的问题：包能否从 profile 解析到、解析出的入口是否具备加载器采纳的形状（`name` / `apply` / `inject`）、patch 文件是否是**单一合法的根序列**、依赖是否是本地链接（改动即时生效而无需重新打包）。
 
 ### 让会话真正拿到工具
 
