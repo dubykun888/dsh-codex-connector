@@ -1,0 +1,20 @@
+{
+  "name": "dsh-codex-connector",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Drive the Codex CLI as a capability provider from DeepSeek Harness: capability catalog, project registration, artifact recovery.",
+  "license": "MIT",
+  "type": "commonjs",
+  "main": "lib/index.js",
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {},
+  "scripts": {
+    "selftest": "node scripts/selftest.cjs",
+    "live-check": "node scripts/live-check.cjs"
+  },
+  "dsh": {
+    "kind": "plugin"
+  }
+}

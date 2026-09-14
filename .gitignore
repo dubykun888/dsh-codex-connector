@@ -1,0 +1,14 @@
+# 运行产物：本机可重建，不进版本库
+.dsh-codex/runs/
+.dsh-codex/state.json
+.dsh-codex/last-live-check.json
+.dsh-codex/config.json
+
+# Codex 运行产物默认落点
+assets/generated/
+
+# 依赖（本包零运行时依赖，此处仅防御）
+node_modules/
+
+# 安装脚本的备份文件
+*.dshcc-backup
