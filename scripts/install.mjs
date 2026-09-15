@@ -153,12 +153,18 @@ try {
   const patchBackup = backup(patchFile)
   backups.push([patchFile, patchBackup])
   let text = fs.existsSync(patchFile) ? fs.readFileSync(patchFile, 'utf8') : ''
-  // No `defaultWorkspace` here on purpose: pinning it to the Host's cwd would
-  // resolve every call against the directory DSH happened to start in, instead
-  // of the calling session's workspace. The tool derives the workspace from its
-  // own call context and only falls back to process.cwd() when nothing else
-  // supplies one.
-  const row = [`- id: ${ROW_ID}`, `  name: '${PKG_NAME}'`].join('\n')
+  // A patch entry WITHOUT `insert` targets an EXISTING row by id and only
+  // overrides its keys; for an id that is not already present the loader warns
+  // "patch: entry <id> not found" and skips it entirely. Adding a NEW row
+  // therefore REQUIRES the `insert:` wrapper — with no id on the wrapper, the
+  // loader appends the enclosed rows to the root list.
+  //
+  // No `config` is attached on purpose: pinning `defaultWorkspace` to the Host's
+  // cwd would resolve every call against the directory DSH happened to start in
+  // rather than the calling session's workspace. The tool derives the workspace
+  // from its own call context and falls back to process.cwd() only when nothing
+  // else supplies one.
+  const row = ['- insert:', `    - id: ${ROW_ID}`, `      name: '${PKG_NAME}'`].join('\n')
 
   if (uninstall) {
     text = removeRow(text, ROW_ID)
@@ -248,21 +254,37 @@ function removeRow(text, id) {
   const out = []
   let skipping = false
   for (const line of lines) {
+    // A row starts either as `- insert:` or as a bare `- id: ...`. Both forms
+    // must be removable, so removal is driven by a following `id:` line rather
+    // than by the wrapper.
+    if (/^-\s+insert:\s*$/.test(line)) {
+      skipping = false
+      out.push({ kind: 'maybe-header', line })
+      continue
+    }
     if (/^-\s+id:\s/.test(line)) {
       skipping = line.includes(`id: ${id}`)
-      if (skipping) continue
-    }
-    if (skipping) {
-      // row content is indented or a nested key; a new top-level row ends it
-      if (/^-\s+/.test(line)) {
-        skipping = false
-      } else {
+      if (skipping) {
+        // drop the header we tentatively kept
+        while (out.length > 0 && out[out.length - 1].kind === 'maybe-header') out.pop()
         continue
       }
+      out.push({ kind: 'row', line })
+      continue
     }
-    out.push(line)
+    if (skipping) {
+      // Row content is indented; a new top-level entry ends the skip.
+      if (/^-\s+/.test(line)) {
+        skipping = false
+      } else if (/^\s+/.test(line) || line.trim() === '') {
+        continue
+      } else {
+        skipping = false
+      }
+    }
+    out.push({ kind: 'row', line })
   }
-  return out.join('\n')
+  return out.map((entry) => entry.line).join('\n')
 }
 
 function findShippedPreset(id) {

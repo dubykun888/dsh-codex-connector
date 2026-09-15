@@ -16,6 +16,11 @@ import { createRequire } from 'node:module'
 import fs from 'node:fs'
 import path from 'node:path'
 
+/** Row id this installer writes into the profile patch layer. */
+const ROW_ID = 'tool-codex-connector'
+/** Package name the row must reference. */
+const PKG_NAME = 'dsh-codex-connector'
+
 const require = createRequire(path.join(process.cwd(), 'cordis.patch.yml'))
 const problems = []
 const ok = (message) => process.stdout.write(`ok   ${message}\n`)
@@ -70,9 +75,41 @@ if (resolved) {
       })
     if (stray.length > 0) bad(`patch file has ${stray.length} stray empty-list marker(s); it is invalid YAML`)
     if (unexpected.length > 0) bad(`patch file has unexpected top-level content at line(s) ${unexpected.map((u) => u.i).join(', ')}`)
-    if (!text.includes('- id: tool-codex-connector')) bad('patch file is missing the tool-codex-connector row')
-    else ok('patch row -> tool-codex-connector')
-    if (!text.includes("name: 'dsh-codex-connector'")) bad('row does not reference the package name')
+
+    // Checking for the id alone is NOT enough: a bare `- id: <x>` contains it too,
+    // and that form is a patch against an EXISTING row — the loader warns
+    // "patch: entry <x> not found" and contributes nothing. A NEW row must be
+    // wrapped in `insert:`. That exact mistake shipped once: the plugin never
+    // mounted while every weaker check passed.
+    const lines = text.split(/\r?\n/)
+    const idLine = lines.findIndex((l) => l.includes(`id: ${ROW_ID}`))
+    if (idLine === -1) {
+      bad('patch file is missing the tool-codex-connector row')
+    } else {
+      const indent = lines[idLine].length - lines[idLine].trimStart().length
+      if (indent === 0) {
+        bad(
+          `row at line ${idLine + 1} is a bare top-level entry; a NEW row must be wrapped in "- insert:" ` +
+            'or the loader treats it as an override of a nonexistent row and skips it',
+        )
+      } else {
+        let header = -1
+        for (let i = idLine - 1; i >= 0; i -= 1) {
+          if (/^- /.test(lines[i])) {
+            header = i
+            break
+          }
+        }
+        const headerLine = header === -1 ? '' : lines[header]
+        if (!/^-\s+insert:\s*$/.test(headerLine)) {
+          bad(`row at line ${idLine + 1} is nested under "${headerLine.trim()}", expected "- insert:"`)
+        } else if (!lines.some((l) => /name:\s*'?"?dsh-codex-connector/.test(l))) {
+          bad('row does not reference the package name')
+        } else {
+          ok('patch row -> tool-codex-connector (insert-wrapped)')
+        }
+      }
+    }
   }
 }
 

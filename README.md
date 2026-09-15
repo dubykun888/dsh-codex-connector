@@ -54,7 +54,36 @@ cd "$DSH_HOME/profiles/web"
 node <本仓库>/scripts/verify-install.mjs
 ```
 
-它回答四个安装本身无法确认的问题：包能否从 profile 解析到、解析出的入口是否具备加载器采纳的形状（`name` / `apply` / `inject`）、patch 文件是否是**单一合法的根序列**、依赖是否是本地链接（改动即时生效而无需重新打包）。
+它回答四个安装本身无法确认的问题：包能否从 profile 解析到、解析出的入口是否具备加载器采纳的形状（`name` / `apply` / `inject`）、patch 文件是否是**单一合法的根序列且行被正确包裹**、依赖是否是本地链接（改动即时生效而无需重新打包）。
+
+### patch 行的格式很容易写错 ⚠️
+
+加载器对 patch 条目的语义是二选一的：
+
+| 写法 | 含义 |
+|---|---|
+| `- insert:` 包裹 | 这是**新增**行（包裹层不带 `id` 时，把内部行追加到根列表） |
+| 顶层 `- id: <x>` | 这是**覆盖既有行**，`x` 必须已存在 |
+
+所以新增一行**必须**写成：
+
+```yaml
+- insert:
+    - id: tool-codex-connector
+      name: 'dsh-codex-connector'
+```
+
+写成顶层 `- id: tool-codex-connector` / `name: ...` 时，加载器会认为你要覆盖一个不存在的行，打印
+`patch: entry "tool-codex-connector" not found` 然后**整行跳过**——插件不会挂载，而
+`cordis.patch.yml` 看起来「明明写了」。这个错误真实发生过一次，且当时所有更弱的检查都通过了。
+
+判断是否真的生效，用官方诊断（它会打印**组合后**的树）：
+
+```bash
+dsh --profile web --dump-config | Select-String 'tool-codex-connector'
+```
+
+若能搜到该行且开头没有 `patch: entry ... not found` 警告，才算真正进入组合。
 
 ### 让会话真正拿到工具
 
@@ -244,6 +273,9 @@ inputs:
 | 任务被报 `timed out ... and was terminated` | 超过 `timeoutMs`（默认 15 分钟）被杀 | 结果可能被截断，且**不会**被当成成功。提高 `timeoutMs` 或拆小任务 |
 | 模型报 `not supported when using Codex with a ChatGPT account` | 能力卡里的 `model` 用了账号不可用的模型 | 把卡片 `model` 留空以继承默认 |
 | `.codex/` 被判为外来目录 | 既有目录非本工具创建 | 确认内容后 `codex_project { action: "register", adopt: true }` |
+| **重启后插件列表里看不到它** | 多半是 patch 行写成了顶层 `- id:`，被当成覆盖不存在的行而跳过 | 跑 `dsh --profile web --dump-config`，若出现 `patch: entry "tool-codex-connector" not found` 就是这个原因。改成 `- insert:` 包裹（见「patch 行的格式很容易写错」），然后重启 |
+| 重启后工具仍不出现 | 工具行属于 agent 面，patch 只挂了 host 面的 service | 用 `--preset` 复制一个 preset 并加上工具行（见「让会话真正拿到工具」） |
+| `--dump-config` 报 `EPERM ... cordis.yml` | 它需要重写 profile 根文件；受限沙箱下会被拒 | 这不是配置错误，用有权限的终端跑即可 |
 | `grant-trust` 返回 `no-approval-channel` | 该部署没有审批通道，且写入你的全局配置必须经同意 | 按提示手工加入该条目；或让用户在配置里允许 |
 
 > **关于后台运行**：本版本的工具调用是**同步**的——它不会返回 job id，也不接管后台作业。一次调用会一直阻塞到 Codex 退出或被 `timeoutMs` 杀掉。宿主侧的工具调用超时策略（`@deepseek-ai/dsh-tool-call-timeout-policy`）会在更外层生效。这一点在 README 里写清楚，是因为「长任务后台跑」曾经是一句没有实现支撑的承诺。
