@@ -788,6 +788,131 @@ testAsync('a file the agent left OUTSIDE the workspace is still recovered', asyn
   assert.equal(fs.readFileSync(result.artifacts[0], 'utf8'), 'PNG')
 })
 
+testAsync('a discarded batch variant is not imported (measured)', async () => {
+  // Measured on the 3-icon batch: one item was retried, leaving FOUR images on
+  // the Codex side while the agent reported and placed only three. The extra was
+  // a draft the agent had discarded, and importing it put an image in the
+  // workspace that the capability never asked for.
+  //
+  // Size matching cannot catch it (a discarded draft has a unique size), so the
+  // rule is about intent: when the agent placed files itself, placement was its
+  // job and unmatched sources are drafts. When it placed none, recovery is the
+  // whole point and everything matched is imported.
+  const ws = tmpdir('batch-ws')
+  const home = tmpdir('batch-home')
+  const runDir = path.join(home, 'generated_images', 'r1')
+  fs.mkdirSync(runDir, { recursive: true })
+  fs.mkdirSync(path.join(ws, 'assets', 'generated'), { recursive: true })
+
+  const chosen = ['exec-a.png', 'exec-b.png', 'exec-c.png']
+  for (const [i, name] of chosen.entries()) fs.writeFileSync(path.join(runDir, name), `CHOSEN-${i}`)
+  fs.writeFileSync(path.join(runDir, 'exec-draft.png'), 'DISCARDED-DRAFT')
+
+  const placed = chosen.map((_name, i) => {
+    const dest = path.join(ws, 'assets', 'generated', `icon-${i}.png`)
+    fs.writeFileSync(dest, `CHOSEN-${i}`)
+    return dest
+  })
+
+  const { run } = require('../lib/core/codex-run')
+  // The report names only the three it kept — never the draft.
+  const summary = `已生成三张候选图。\n\n${placed.map((p) => `工作区文件：\`${p}\``).join('\n')}`
+  const fakeSpawn = async () => ({
+    exitCode: 0,
+    signal: null,
+    elapsedMs: 5,
+    timedOut: false,
+    stdout: [
+      '{"type":"thread.started","thread_id":"t1"}',
+      '{"type":"turn.started"}',
+      `{"type":"item.completed","item":{"id":"i","type":"agent_message","text":${JSON.stringify(summary)}}}`,
+      '{"type":"turn.completed"}',
+    ].join('\n'),
+    stderr: '',
+  })
+
+  let result
+  try {
+    result = await run(
+      {
+        workspace: ws,
+        prompt: 'x',
+        codexHome: home,
+        artifacts: {
+          patterns: ['$CODEX_HOME/generated_images/**/*.png'],
+          collectTo: 'assets/generated',
+        },
+      },
+      fakeSpawn,
+    )
+  } catch (error) {
+    assert.fail(`run threw: ${error.message}`)
+  }
+
+  assert.deepEqual(result.recovered, [], 'no draft may be imported when the agent placed its own files')
+  assert.equal(result.artifacts.length, 3, `expected exactly 3, got ${JSON.stringify(result.artifacts)}`)
+  assert.deepEqual(
+    fs.readdirSync(path.join(ws, 'assets', 'generated')).sort(),
+    ['icon-0.png', 'icon-1.png', 'icon-2.png'],
+    'the discarded draft must not appear in the workspace',
+  )
+})
+
+testAsync('an agent that places NOTHING still gets everything recovered', async () => {
+  // The complement, and the reason the fallback exists: an agent that never
+  // copies into the workspace must not lose its output.
+  //
+  // The sources are created DURING the run, by the spawner — exactly as Codex
+  // does it. Creating them before the run would leave the snapshot diff with
+  // nothing to see, which is a property of the test, not of recovery.
+  const ws = tmpdir('nothing-ws')
+  const home = tmpdir('nothing-home')
+  const runDir = path.join(home, 'generated_images', 'r1')
+  fs.mkdirSync(runDir, { recursive: true })
+  const sources = [path.join(runDir, 'exec-x.png'), path.join(runDir, 'exec-y.png')]
+
+  const { run } = require('../lib/core/codex-run')
+  const fakeSpawn = async () => {
+    // Files appear while the run is in flight, as a real run produces them.
+    for (const [i, file] of sources.entries()) fs.writeFileSync(file, `BYTES-${i}`)
+    return {
+      exitCode: 0,
+      signal: null,
+      elapsedMs: 5,
+      timedOut: false,
+      stdout: [
+        '{"type":"thread.started","thread_id":"t1"}',
+        '{"type":"turn.started"}',
+        '{"type":"item.completed","item":{"id":"i","type":"agent_message","text":"生成了两张图。"}}',
+        '{"type":"turn.completed"}',
+      ].join('\n'),
+      stderr: '',
+    }
+  }
+
+  let result
+  try {
+    result = await run(
+      {
+        workspace: ws,
+        prompt: 'x',
+        codexHome: home,
+        artifacts: {
+          patterns: ['$CODEX_HOME/generated_images/**/*.png'],
+          collectTo: 'assets/generated',
+        },
+      },
+      fakeSpawn,
+    )
+  } catch (error) {
+    assert.fail(`run threw: ${error.message}`)
+  }
+
+  assert.equal(result.recovered.length, 2, `both sources must be recovered, got ${result.recovered.length}`)
+  assert.equal(result.artifacts.length, 2)
+  for (const file of result.artifacts) assert.ok(fs.existsSync(file), `${file} must exist in the workspace`)
+})
+
 testAsync('danger-full-access needs explicit authorisation on the call', async () => {
   const spawn = async () => ({ exitCode: 0, stdout: '', stderr: '', elapsedMs: 1 })
   // A card/caller default that merely resolves to danger is refused...

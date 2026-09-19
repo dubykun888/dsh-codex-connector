@@ -60,3 +60,7 @@
 - 2026-09-19T16:31:46.278Z · capability=adhoc · ok=false · 0s · artifacts=0 · run=20260919-163146-cd4e65
 - 2026-09-19T16:34:15.340Z · capability=image.generate · ok=true · 225s · artifacts=1 · run=20260919-163415-818f98
 - 2026-09-19T16:38:19.914Z · capability=adhoc · ok=false · 0s · artifacts=0 · run=20260919-163819-428c33
+- 2026-09-19T16:39:34.444Z · capability=art.assets · ok=true · 641s · artifacts=5 · run=20260919-163934-25e566
+- 2026-09-19T16:51:54.529Z · capability=adhoc · ok=false · 0s · artifacts=0 · run=20260919-165154-926d43
+- 2026-09-19T16:52:09.662Z · capability=adhoc · ok=false · 0s · artifacts=0 · run=20260919-165209-4c5c3b
+- 2026-09-19T16:52:56.043Z · capability=adhoc · ok=false · 0s · artifacts=0 · run=20260919-165256-bf1e68
