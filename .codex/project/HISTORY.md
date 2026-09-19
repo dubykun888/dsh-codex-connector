@@ -49,3 +49,12 @@
 - 2026-09-19T16:19:25.109Z · capability=adhoc · ok=false · 0s · artifacts=0 · run=20260919-161925-e00035
 - 2026-09-19T16:20:01.745Z · capability=adhoc · ok=false · 0s · artifacts=0 · run=20260919-162001-e04572
 - 2026-09-19T16:20:33.412Z · capability=adhoc · ok=false · 0s · artifacts=0 · run=20260919-162033-41d20e
+- 2026-09-19T16:21:57.571Z · capability=image.generate · ok=true · 211s · artifacts=1 · run=20260919-162157-b03297
+- 2026-09-19T16:26:32.632Z · capability=adhoc · ok=false · 0s · artifacts=0 · run=20260919-162632-c076e1
+- 2026-09-19T16:26:39.523Z · capability=adhoc · ok=false · 0s · artifacts=0 · run=20260919-162639-e8348b
+- 2026-09-19T16:27:08.179Z · capability=adhoc · ok=false · 0s · artifacts=0 · run=20260919-162708-4fe47c
+- 2026-09-19T16:30:02.324Z · capability=adhoc · ok=false · 0s · artifacts=0 · run=20260919-163002-78adb0
+- 2026-09-19T16:30:26.034Z · capability=adhoc · ok=false · 0s · artifacts=0 · run=20260919-163026-f87db9
+- 2026-09-19T16:30:44.760Z · capability=adhoc · ok=false · 0s · artifacts=0 · run=20260919-163044-63504f
+- 2026-09-19T16:30:57.076Z · capability=adhoc · ok=false · 0s · artifacts=0 · run=20260919-163057-d48ddf
+- 2026-09-19T16:31:46.278Z · capability=adhoc · ok=false · 0s · artifacts=0 · run=20260919-163146-cd4e65
