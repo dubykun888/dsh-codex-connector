@@ -277,6 +277,7 @@ inputs:
 | 重启后工具仍不出现 | 工具行属于 agent 面，patch 只挂了 host 面的 service | 用 `--preset` 复制一个 preset 并加上工具行（见「让会话真正拿到工具」） |
 | `--dump-config` 报 `EPERM ... cordis.yml` | 它需要重写 profile 根文件；受限沙箱下会被拒 | 这不是配置错误，用有权限的终端跑即可 |
 | `grant-trust` 返回 `no-approval-channel` | 该部署没有审批通道，且写入你的全局配置必须经同意 | 按提示手工加入该条目；或让用户在配置里允许 |
+| **工具报 `returned invalid output: value is not lossless JSON`** | 工具返回值里有 `undefined`。**注意这条报错会指向错误的层**：它也可能由「参数声明为必填而调用方合理地省略了」触发 | 升级到已修版本（返回值在工具边界统一净化；`codex_do` 的 `task` 改为可选）。用 `npm run verify-boundary` 可以对着 harness 真实校验器复现 |
 
 > **关于后台运行**：本版本的工具调用是**同步**的——它不会返回 job id，也不接管后台作业。一次调用会一直阻塞到 Codex 退出或被 `timeoutMs` 杀掉。宿主侧的工具调用超时策略（`@deepseek-ai/dsh-tool-call-timeout-policy`）会在更外层生效。这一点在 README 里写清楚，是因为「长任务后台跑」曾经是一句没有实现支撑的承诺。
 
@@ -285,8 +286,10 @@ inputs:
 ## 验证
 
 ```bash
-npm run selftest     # 离线自测：58 项，不联网、不调 Codex
-npm run live-check   # 真实链路：会真的调用 Codex（每次 2 分钟起）
+npm run selftest         # 离线自测：60 项，不联网、不调 Codex
+npm run live-check       # 真实链路：会真的调用 Codex（每次 2 分钟起）
+npm run verify-install   # 安装是否真的生效（在该 profile 目录里跑）
+npm run verify-boundary  # 对着 harness 真实校验器验证参数与工具返回值
 ```
 
 `live-check` 支持的开关：
@@ -297,7 +300,20 @@ node scripts/live-check.cjs --with-image   # 额外验证 imagegen 出图与制�
 node scripts/live-check.cjs --workspace <dir>
 ```
 
-自测覆盖了若干**只有在真实运行中才会暴露**的回归：种子卡的 frontmatter 完整性、运行副作用创建 `.codex/` 导致的自我死锁、item 形态的传输通知误判为失败、以及 `danger-full-access` 授权边界。
+`verify-boundary` 需要已安装的 Profile（它从那里加载 harness 包），可加 `--live` 跑一次真实出图：
+
+```bash
+node scripts/verify-boundary.mjs --live
+```
+
+它验证两件事，都是离线自测无法覆盖的：
+
+1. **参数**：本插件注册的 `parameters` 是合法 JSON Schema，且**没有把可选参数错标为必填**——`codex_do` 的 `task` 曾经是必填，导致 `{ capability, inputs }` 这种完全合法的调用被拒。
+2. **返回值**：每个 worker 的真实结果都能通过 harness 的 `isJsonValue`（无损 JSON）。
+
+为什么要单独有它：那次失败的报错是 `returned invalid output: value is not lossless JSON`，**指向了错误的层**——真正的原因是参数必填性。只有对着**真实校验器**跑，才能把这两层区分开。
+
+离线自测覆盖了若干**只有在真实运行中才会暴露**的回归：种子卡 frontmatter 完整性、运行副作用创建 `.codex/` 导致的自我死锁、item 形态的传输通知误判为失败、超时被判为成功、工具返回值含 `undefined`、`danger-full-access` 授权边界。
 
 ---
 

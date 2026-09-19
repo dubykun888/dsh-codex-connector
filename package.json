@@ -13,7 +13,8 @@
   "scripts": {
     "selftest": "node scripts/selftest.cjs",
     "live-check": "node scripts/live-check.cjs",
-    "verify-install": "node scripts/verify-install.mjs"
+    "verify-install": "node scripts/verify-install.mjs",
+    "verify-boundary": "node scripts/verify-boundary.mjs"
   },
   "dsh": {
     "kind": "plugin"

@@ -785,6 +785,125 @@ async function main() {
     assert.deepEqual(registered[0].output.render({}, { ok: true }), [{ type: 'text', text: '{\n  "ok": true\n}' }])
   })
 
+  test('tool results are lossless JSON (a live call failed on this)', () => {
+    const { toLosslessJson } = require('../lib/index')
+    // A faithful mirror of the harness validator (dsh-util-values
+    // walkJsonValue): JSON.stringify DROPS undefined, so it can never be the
+    // test — that is exactly why this shipped broken.
+    const isLossless = (value) => {
+      const seen = new Set()
+      const walk = (current) => {
+        if (current === null) return true
+        const t = typeof current
+        if (t === 'boolean' || t === 'string') return true
+        if (t === 'number') return Number.isFinite(current) && !Object.is(current, -0)
+        if (t !== 'object') return false // undefined, function, symbol, bigint
+        if (seen.has(current)) return false // cycles
+        seen.add(current)
+        try {
+          if (Array.isArray(current)) {
+            // plain array with no extra own keys beyond indices + length
+            if (Reflect.ownKeys(current).length !== current.length + 1) return false
+            if (Object.getPrototypeOf(current) !== Array.prototype) return false
+            for (let i = 0; i < current.length; i += 1) if (!walk(current[i])) return false
+            return true
+          }
+          if (Object.getPrototypeOf(current) !== Object.prototype) return false
+          for (const key of Object.keys(current)) if (!walk(current[key])) return false
+          return true
+        } finally {
+          seen.delete(current)
+        }
+      }
+      return walk(value)
+    }
+
+    // A real codex_do result shape: several fields are legitimately undefined.
+    const live = {
+      ok: true,
+      runId: 'r1',
+      threadId: undefined, // engine reported no thread
+      artifacts: ['C:\\ws\\assets\\generated\\a.png'],
+      artifactSources: [],
+      usage: undefined,
+      errors: [],
+      destRoot: undefined, // artifact collection refused a destination
+      nested: { keep: 1, drop: undefined, list: [1, undefined, 3] },
+    }
+    assert.equal(isLossless(live), false, 'the raw shape must be rejected by the harness')
+
+    const clean = toLosslessJson(live)
+    assert.equal(isLossless(clean), true, 'sanitised output must be lossless')
+    assert.equal('threadId' in clean, false, 'undefined keys are dropped, not nulled')
+    assert.equal('destRoot' in clean, false)
+    assert.equal('usage' in clean, false)
+    assert.deepEqual(clean.nested.list, [1, null, 3], 'undefined inside an array becomes null')
+    assert.equal(clean.ok, true)
+    assert.deepEqual(clean.artifactSources, [])
+
+    // Every scalar rule the harness enforces, not just the obvious ones.
+    const odd = toLosslessJson({
+      nan: NaN,
+      inf: Infinity,
+      negZero: -0, // rejected by the harness even though JSON.stringify keeps it
+      date: new Date(0),
+      big: 10n,
+    })
+    assert.equal(odd.nan, null)
+    assert.equal(odd.inf, null)
+    assert.equal(odd.negZero, null, '-0 is not lossless JSON')
+    assert.equal(odd.date, '1970-01-01T00:00:00.000Z')
+    assert.equal(odd.big, 10)
+    assert.equal(isLossless(odd), true)
+
+    // An array with extra own keys is rejected by the harness; sanitising must
+    // not preserve them.
+    const tagged = [1, 2]
+    tagged.extra = 'nope'
+    const cleanTagged = toLosslessJson({ tagged })
+    assert.equal(Array.isArray(cleanTagged.tagged), true)
+    assert.deepEqual(cleanTagged.tagged, [1, 2])
+    assert.equal(isLossless(cleanTagged), true)
+
+    // Holes become null so length and key count stay valid.
+    const sparse = [1, , 3] // eslint-disable-line no-sparse-arrays
+    const cleanSparse = toLosslessJson({ sparse })
+    assert.deepEqual(cleanSparse.sparse, [1, null, 3])
+    assert.equal(isLossless(cleanSparse), true)
+
+    // A cycle must not throw away the whole result.
+    const cyclic = { name: 'root' }
+    cyclic.self = cyclic
+    const safe = toLosslessJson(cyclic)
+    assert.equal(safe.self, '[circular]')
+    assert.equal(isLossless(safe), true)
+
+    // Scalars and null survive unchanged.
+    assert.equal(toLosslessJson('x'), 'x')
+    assert.equal(toLosslessJson(0), 0)
+    assert.equal(toLosslessJson(false), false)
+    assert.equal(toLosslessJson(null), null)
+    assert.equal(toLosslessJson(undefined), undefined)
+
+    // End-to-end over the real worker result shapes: everything a tool can
+    // return must survive sanitising.
+    const artifacts = require('../lib/core/artifacts')
+    const refused = artifacts.collect({ files: [], workspace: tmpdir('lossless-ws'), collectTo: '../x' })
+    assert.equal(isLossless(refused), false, 'a refusal result contains an undefined destRoot')
+    assert.equal(isLossless(toLosslessJson(refused)), true)
+  })
+
+  test('renderJson never throws on an odd value', () => {
+    const { renderJson } = require('../lib/index')
+    assert.deepEqual(renderJson({}, undefined), [{ type: 'text', text: '(no result)' }])
+    assert.deepEqual(renderJson({}, 'plain'), [{ type: 'text', text: 'plain' }])
+    const cyclic = {}
+    cyclic.self = cyclic
+    const rendered = renderJson({}, cyclic)
+    assert.equal(rendered[0].type, 'text')
+    assert.ok(typeof rendered[0].text === 'string' && rendered[0].text.length > 0)
+  })
+
   test('a missing tool registry is reported instead of half-mounting', () => {
     const logs = []
     const original = console.error
