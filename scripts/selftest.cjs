@@ -392,7 +392,7 @@ test('suppresses credentials but keeps the essentials', () => {
   assert.ok(dropped.includes('DEEPSEEK_API_KEY'))
 })
 
-test('serializes per key and detects transient lock errors', async () => {
+testAsync('serializes per key and detects transient lock errors', async () => {
   let concurrent = 0
   let max = 0
   const work = async () => {
@@ -648,7 +648,7 @@ test('builds the measured exec argv including resume placement', () => {
   assert.ok(argv.indexOf('-o') < resumeAt, 'options must precede the resume subcommand')
 })
 
-test('a killed (timed-out) run is never reported as success', async () => {
+testAsync('a killed (timed-out) run is never reported as success', async () => {
   // Regression from adversarial review: spawn.js RESOLVES on timeout with
   // timedOut:true, and codex-run.js judged success from the event stream alone.
   // A stream that already contained turn.completed therefore reported a
@@ -672,7 +672,123 @@ test('a killed (timed-out) run is never reported as success', async () => {
   assert.ok(!ok.warnings.some((w) => /timed out/.test(w)))
 })
 
-test('danger-full-access needs explicit authorisation on the call', async () => {
+testAsync('a file the agent already placed in the workspace is adopted, not re-copied', async () => {
+  // Measured on a live image run: the card told Codex to copy its output into
+  // assets/generated/ with a semantic name, Codex did exactly that, and the
+  // controller then copied the SOURCE in as well — storing identical bytes twice
+  // and reporting only its own hash-named duplicate, so the real deliverable was
+  // missing from `artifacts`.
+  //
+  // The agent-authored file is written BEFORE the run starts, because a file
+  // created during the run would also appear in the snapshot diff; this test is
+  // specifically about a file that is already there and must simply be adopted.
+  const ws = tmpdir('adopt-ws')
+  const home = tmpdir('adopt-home')
+  const runDir = path.join(home, 'generated_images', 'r1')
+  fs.mkdirSync(runDir, { recursive: true })
+  fs.mkdirSync(path.join(ws, 'assets', 'generated'), { recursive: true })
+
+  const source = path.join(runDir, 'exec-abc.png')
+  fs.writeFileSync(source, 'PNG-BYTES')
+  const authored = path.join(ws, 'assets', 'generated', 'hero-boat.png')
+  fs.writeFileSync(authored, 'PNG-BYTES')
+
+  const { run } = require('../lib/core/codex-run')
+  const summary = `已生成图片。\n\n原图：\`${source}\`\n\n工作区副本：\`${authored}\``
+  const fakeSpawn = async () => ({
+    exitCode: 0,
+    signal: null,
+    elapsedMs: 5,
+    timedOut: false,
+    stdout: [
+      '{"type":"thread.started","thread_id":"t1"}',
+      '{"type":"turn.started"}',
+      `{"type":"item.completed","item":{"id":"i","type":"agent_message","text":${JSON.stringify(summary)}}}`,
+      '{"type":"turn.completed"}',
+    ].join('\n'),
+    stderr: '',
+  })
+
+  let result
+  try {
+    result = await run(
+      {
+        workspace: ws,
+        prompt: 'x',
+        // codexHome belongs INSIDE the request: run() takes (request, spawn), so
+        // anything passed as a third argument is silently ignored. That is how a
+        // real gap stayed hidden — recovery fell back to the default Codex home.
+        codexHome: home,
+        artifacts: {
+          patterns: ['$CODEX_HOME/generated_images/**/*.png'],
+          collectTo: 'assets/generated',
+        },
+      },
+      fakeSpawn,
+    )
+  } catch (error) {
+    assert.fail(`run threw: ${error.message}`)
+  }
+
+  assert.equal(result.artifacts[0], authored, "the agent's own file must be reported first")
+  assert.ok(!result.artifacts.includes(source), 'the Codex-side source must not be a reported deliverable')
+  const pngs = fs.readdirSync(path.join(ws, 'assets', 'generated')).filter((f) => f.endsWith('.png'))
+  assert.deepEqual(pngs, ['hero-boat.png'], `expected only the agent's file, found ${JSON.stringify(pngs)}`)
+  assert.deepEqual(result.recovered, [], 'nothing needed recovering; the agent had already placed it')
+})
+
+testAsync('a file the agent left OUTSIDE the workspace is still recovered', async () => {
+  // The complement: when the agent does NOT copy into the workspace, the
+  // controller must still bring the artifact in — the reason recovery exists.
+  // Here the source is created BEFORE the run, so the snapshot diff sees it as
+  // pre-existing; the agent's reported path is what must rescue it.
+  const ws = tmpdir('recover-ws')
+  const home = tmpdir('recover-home')
+  const runDir = path.join(home, 'generated_images', 'r2')
+  fs.mkdirSync(runDir, { recursive: true })
+  const source = path.join(runDir, 'exec-def.png')
+  fs.writeFileSync(source, 'PNG')
+
+  const { run } = require('../lib/core/codex-run')
+  const fakeSpawn = async () => ({
+    exitCode: 0,
+    signal: null,
+    elapsedMs: 5,
+    timedOut: false,
+    stdout: [
+      '{"type":"thread.started","thread_id":"t1"}',
+      '{"type":"turn.started"}',
+      `{"type":"item.completed","item":{"id":"i","type":"agent_message","text":${JSON.stringify(`原图：${source}`)}}}`,
+      '{"type":"turn.completed"}',
+    ].join('\n'),
+    stderr: '',
+  })
+
+  let result
+  try {
+    result = await run(
+      {
+        workspace: ws,
+        prompt: 'x',
+        codexHome: home,
+        artifacts: {
+          patterns: ['$CODEX_HOME/generated_images/**/*.png'],
+          collectTo: 'assets/generated',
+        },
+      },
+      fakeSpawn,
+    )
+  } catch (error) {
+    assert.fail(`run threw: ${error.message}`)
+  }
+
+  assert.equal(result.artifacts.length, 1, `expected one deliverable, got ${JSON.stringify(result.artifacts)}`)
+  assert.equal(result.recovered.length, 1, 'a file left outside must be recovered')
+  assert.ok(fs.existsSync(result.artifacts[0]))
+  assert.equal(fs.readFileSync(result.artifacts[0], 'utf8'), 'PNG')
+})
+
+testAsync('danger-full-access needs explicit authorisation on the call', async () => {
   const spawn = async () => ({ exitCode: 0, stdout: '', stderr: '', elapsedMs: 1 })
   // A card/caller default that merely resolves to danger is refused...
   await assert.rejects(
