@@ -58,3 +58,5 @@
 - 2026-09-19T16:30:44.760Z · capability=adhoc · ok=false · 0s · artifacts=0 · run=20260919-163044-63504f
 - 2026-09-19T16:30:57.076Z · capability=adhoc · ok=false · 0s · artifacts=0 · run=20260919-163057-d48ddf
 - 2026-09-19T16:31:46.278Z · capability=adhoc · ok=false · 0s · artifacts=0 · run=20260919-163146-cd4e65
+- 2026-09-19T16:34:15.340Z · capability=image.generate · ok=true · 225s · artifacts=1 · run=20260919-163415-818f98
+- 2026-09-19T16:38:19.914Z · capability=adhoc · ok=false · 0s · artifacts=0 · run=20260919-163819-428c33
