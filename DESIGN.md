@@ -69,6 +69,23 @@ template-creator:template-creator      visualize:visualize
 
 `bin/` 下是**按内容哈希命名的版本目录**（观察到 `bffc5354119c8421` 与 `116cfc4fd47f015a` 两个，后者已不存在），升级会换名。因此定位必须是**有序探测**，绝不硬编码（实现见 §7.4）。
 
+### 1.4.1 一台机器上可能并存多个 Codex 入口，且版本不同
+
+实测这台机器上有**三份**可执行入口：
+
+| 入口 | 版本 |
+|---|---|
+| `codex`（PATH 上的 npm 独立安装 `@openai/codex`） | **0.155.1** |
+| `%LOCALAPPDATA%\OpenAI\Codex\bin\<hash>\codex.exe`（桌面端捆绑） | 0.154.0-alpha.6.2 |
+| `%CODEX_HOME%\plugins\.plugin-appserver\codex.exe` | 0.154.0-alpha.6.2 |
+
+**两个陷阱**：
+
+1. **桌面端会把自己的捆绑 CLI 路径写进 `CODEX_CLI_PATH`**。若把这条配置线索排在 PATH 之前，所有调用都会静默跑到桌面端那份**较旧**的构建上——用户装了 CLI，却得到桌面端的行为。这条线索因此排在 PATH **之后**。
+2. **Windows 上 npm 全局安装是一个 `.cmd` 包装器**，内容是 `node <pkg>/bin/codex.js`。它不是可执行映像，直接 spawn 会失败；必须解析出目标脚本并以 `node <script>` 启动（见 §7.4）。
+
+实测三份的 `exec` 参数集**互相兼容**（`--json` / `-s` / `-C` / `-m` / `-o` / `--skip-git-repo-check` / `--ephemeral` / `resume` / `review` / `--output-schema` 在 0.155.1 上全部存在），所以切换入口不影响执行契约。
+
 ### 1.5 事件流 schema
 
 `codex exec --json` 输出 JSONL。实测到的事件类型与字段：
@@ -439,14 +456,20 @@ trust_level = "trusted"
 ### 7.4 二进制定位（有序探测，绝不硬编码）
 
 ```
-① 用户显式配置（config.json 的 codexBinary）    ← 最高优先级
-② 用户级 Codex 配置里的 CLI 路径线索
-③ %LOCALAPPDATA%\OpenAI\Codex\bin\<哈希>\codex.exe（取最新）
-④ %CODEX_HOME%\plugins\.plugin-appserver\codex.exe
-⑤ PATH 上的 codex
+① 用户显式配置（.dsh-codex/config.json 的 codexBinary）   ← 最高优先级
+② PATH 上的 codex（独立 CLI）                              ← 用户装了 CLI 就该用它
+③ 用户级 Codex 配置里的 CODEX_CLI_PATH 线索（桌面端捆绑版）
+④ %LOCALAPPDATA%\OpenAI\Codex\bin\<哈希>\codex.exe（取最新）
+⑤ %CODEX_HOME%\plugins\.plugin-appserver\codex.exe
 ```
 
-实测命中第 ② 条。每一条的尝试结果都会记录在 `codex_status` 的 `probes` 里，便于排错。
+**顺序本身就是设计决策，有实测依据**（§1.4.1）：
+
+- **② 在 ③ 之前**：桌面端会把**自己的捆绑 CLI** 写进 `CODEX_CLI_PATH`。配置线索先行会让「装了 CLI」的用户静默跑到桌面端的旧构建上，实测两者版本不同（0.155.1 vs 0.154.0-alpha.6.2）。这一条是真实发生过的缺陷（§9.1 L-14）。
+- **① 仍在最前**：显式配置永远覆盖一切，这是给部署留的确定性出口。
+- 每一条的尝试结果都会记录在 `codex_status` 的 `probes` 里，便于排错——`source` 字段直接告诉调用方这次用的是哪一份。
+
+**Windows 上的 npm 全局安装需要拆包**：`codex.cmd` 只是内容为 `node <pkg>/bin/codex.js` 的包装器，不是可执行映像，直接交给 spawn 会失败。定位器会解析出目标脚本，并以 `node <script>` 形式启动，同时把这一步反映在 argv 里（前缀参数排在 `exec` 子命令之前）。
 
 ### 7.5 环境收敛
 
@@ -551,6 +574,7 @@ dsh --profile web --dump-config
 | **L-11** | **中** | **`codexHome` 从未被传递**：`run()` 里的快照与路径匹配始终使用 `artifacts.js` 的**默认** Codex 主目录。用户目录恰好就是默认值，所以生产可用；一旦设置了 `CODEX_HOME` 环境变量，制品回收会**静默失效** | 追查 L-10 时打印出 `codexHome=undefined` | 在 `run()` 入口解析一次并全程使用；工具层显式透传 |
 | **L-12** | **低** | **测试框架会假绿**：同步的 `test()` 被传入了 `async` 回调，Promise 未被 await，断言变成未捕获拒绝——**失败的测试被计为通过**，摘要先打印绿色、随后进程崩溃 | 出现「65 passed」紧跟崩溃 | 5 处改为 `testAsync`（见 §9.3） |
 | **L-13** | **中** | **废弃变体被导入工作区**：批量出图时有条目重试过，Codex 侧留下**4 个**源文件，而 agent 只报告并放置了 **3 个**最终选中项。按大小去重抓不到它（废弃草稿尺寸唯一），于是第 4 张被复制进工作区——**放进去一张没有任何能力要求过的图** | 真实批量出图后核对文件数：工作区 4 张 ≠ 清单 3 项 | 规则从「文件同一性」改为**意图**：agent 若已自行放置文件，说明它在管理落盘，未被选中的源一律视为草稿不导入；agent 若一张都没放，则回收全部匹配源——那才是回收存在的意义。两个方向都有回归测试 |
+| **L-14** | **高** | **一直在跑桌面端捆绑的 CLI，而不是独立 CLI**：`CODEX_CLI_PATH` 这条配置线索排在 PATH 之前，而桌面端会把自己的捆绑路径写进该键。用户机器上两者**版本不同**（独立 0.155.1 vs 桌面捆绑 0.154.0-alpha.6.2），于是所有调用都静默落在较旧的桌面构建上——**用户装了 CLI，得到的却是桌面端行为** | 用户指出「不要再使用 codex 桌面端」后核查，发现 PATH 上确有 `@openai/codex` 0.155.1 | PATH 提前到配置线索**之前**（显式覆盖仍在最前）。同时解决 Windows npm 全局安装的 `.cmd` 包装器问题：解析出目标脚本并以 `node <script>` 启动，而不是把不可执行的 `.cmd` 交给 spawn |
 
 ### 9.2 未验证 / 受限的项（不声称结论）
 

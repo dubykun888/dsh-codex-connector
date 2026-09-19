@@ -321,6 +321,87 @@ test('a missing turn.completed fails the run', () => {
   assert.equal(parsed.ok, false)
 })
 
+process.stdout.write('\nlocate\n')
+
+test('the standalone CLI on PATH wins over the desktop config hint', () => {
+  // Regression, reported by the user: every test had been running against the
+  // DESKTOP's bundled binary because the `CODEX_CLI_PATH` hint was probed before
+  // PATH. A machine can carry both, and they are different builds (measured:
+  // 0.154.0-alpha.6.2 bundled vs 0.155.1 standalone npm). Someone who installs
+  // the CLI expects `codex` to mean the CLI.
+  const locate = require('../lib/core/locate')
+  const fsx = require('node:fs')
+
+  // Build a fake PATH holding an npm-style .cmd shim, plus a fake codex home
+  // whose config points at a "desktop" binary.
+  const binDir = tmpdir('locate-bin')
+  const npmDir = path.join(binDir, 'npm')
+  const pkgDir = path.join(npmDir, 'node_modules', '@openai', 'codex', 'bin')
+  fsx.mkdirSync(pkgDir, { recursive: true })
+  const entry = path.join(pkgDir, 'codex.js')
+  fsx.writeFileSync(entry, '// standalone cli entry\n')
+  fsx.writeFileSync(
+    path.join(npmDir, 'codex.cmd'),
+    '@ECHO off\r\n"%dp0%\\node_modules/@openai/codex/bin/codex.js" %*\r\n',
+  )
+
+  const home = tmpdir('locate-home')
+  const desktop = path.join(tmpdir('locate-desktop'), 'codex.exe')
+  fsx.writeFileSync(desktop, '')
+  fsx.writeFileSync(
+    path.join(home, 'config.toml'),
+    `CODEX_CLI_PATH = '${desktop.replace(/\\/g, '\\\\')}'\n`,
+  )
+
+  const original = process.env.PATH
+  process.env.PATH = npmDir
+  try {
+    const located = locate.locateCodex({ codexHome: home })
+    assert.equal(located.source, 'path', `expected the PATH CLI, got ${located.source} (${located.path})`)
+    assert.equal(located.path, entry)
+    // The .cmd shim is not runnable as an image, so it must be unpacked.
+    assert.equal(located.command, process.execPath, 'a shim must be launched through node')
+    assert.deepEqual(located.prefixArgs, [entry])
+  } finally {
+    process.env.PATH = original
+  }
+})
+
+test('the .cmd shim target is extracted correctly', () => {
+  const locate = require('../lib/core/locate')
+  const dir = tmpdir('shim')
+  const shim = path.join(dir, 'codex.cmd')
+  fs.writeFileSync(
+    shim,
+    '@ECHO off\r\nendLocal & goto #_undefined_# 2>NUL || title %COMSPEC% & "%_prog%"  "%dp0%\\node_modules\\@openai\\codex\\bin\\codex.js" %*\r\n',
+    'utf8',
+  )
+  const target = locate.scriptFromCmdShim(shim)
+  assert.equal(target, path.join(dir, 'node_modules', '@openai', 'codex', 'bin', 'codex.js'))
+})
+
+test('an explicit override still beats everything', () => {
+  const locate = require('../lib/core/locate')
+  const forced = path.join(tmpdir('forced'), 'my-codex.exe')
+  fs.writeFileSync(forced, '')
+  const located = locate.locateCodex({ override: forced })
+  assert.equal(located.source, 'config')
+  assert.equal(located.path, forced)
+  assert.deepEqual(located.prefixArgs, [])
+})
+
+test('argv carries the shim prefix before the exec subcommand', () => {
+  const { buildArgv } = require('../lib/core/codex-run')
+  const argv = buildArgv({
+    command: 'node',
+    prefixArgs: ['/npm/codex.js'],
+    binary: '/npm/codex.js',
+    sandbox: 'read-only',
+    cwd: '/ws',
+  })
+  assert.deepEqual(argv.slice(0, 5), ['node', '/npm/codex.js', 'exec', '--json', '--skip-git-repo-check'])
+})
+
 process.stdout.write('\nartifacts\n')
 
 test('globs ** across directories and expands $CODEX_HOME', () => {
