@@ -278,6 +278,7 @@ inputs:
 | `--dump-config` 报 `EPERM ... cordis.yml` | 它需要重写 profile 根文件；受限沙箱下会被拒 | 这不是配置错误，用有权限的终端跑即可 |
 | `grant-trust` 返回 `no-approval-channel` | 该部署没有审批通道，且写入你的全局配置必须经同意 | 按提示手工加入该条目；或让用户在配置里允许 |
 | **工具报 `returned invalid output: value is not lossless JSON`** | 工具返回值里有 `undefined`。**注意这条报错会指向错误的层**：它也可能由「参数声明为必填而调用方合理地省略了」触发 | 升级到已修版本（返回值在工具边界统一净化；`codex_do` 的 `task` 改为可选）。用 `npm run verify-boundary` 可以对着 harness 真实校验器复现 |
+| **每次调用都跑满 `timeoutMs` 后被终止**（伴随多条 `Reconnecting`） | 网络到 Codex 推理端点不通。**这不是插件故障** | 先跑 `codex doctor --summary` 看 `reachability` / `websocket` 两行，再直接测 TCP：`Test-NetConnection chatgpt.com -Port 443`。若 TCP 不通，插件无能为力——需要修网络（代理/VPN/防火墙/DNS） |
 
 > **关于后台运行**：本版本的工具调用是**同步**的——它不会返回 job id，也不接管后台作业。一次调用会一直阻塞到 Codex 退出或被 `timeoutMs` 杀掉。宿主侧的工具调用超时策略（`@deepseek-ai/dsh-tool-call-timeout-policy`）会在更外层生效。这一点在 README 里写清楚，是因为「长任务后台跑」曾经是一句没有实现支撑的承诺。
 

@@ -27,3 +27,12 @@
 - 2026-09-14T18:25:41.463Z · capability=adhoc · ok=false · 0s · artifacts=0 · run=20260914-182541-2afe01
 - 2026-09-15T11:30:55.823Z · capability=adhoc · ok=false · 0s · artifacts=0 · run=20260915-113055-5266b3
 - 2026-09-15T11:32:50.944Z · capability=adhoc · ok=false · 0s · artifacts=0 · run=20260915-113250-e8052e
+- 2026-09-19T08:07:20.561Z · capability=image.generate · ok=true · 262s · artifacts=1 · run=20260919-080720-93ef1c
+- 2026-09-19T08:12:48.252Z · capability=adhoc · ok=false · 0s · artifacts=0 · run=20260919-081248-1ab176
+- 2026-09-19T08:16:10.066Z · capability=image.generate · ok=false · 900s · artifacts=0 · run=20260919-081610-b76fb1
+- 2026-09-19T08:32:00.956Z · capability=adhoc · ok=false · 0s · artifacts=0 · run=20260919-083200-3ab59f
+- 2026-09-19T08:40:33.067Z · capability=adhoc · ok=false · 0s · artifacts=0 · run=20260919-084033-cfbf11
+- 2026-09-19T13:18:07.191Z · capability=image.generate · ok=false · 900s · artifacts=0 · run=20260919-131807-2666e2
+- 2026-09-19T13:33:07.259Z · capability=image.generate · ok=false · 900s · artifacts=0 · run=20260919-133307-651bff
+- 2026-09-19T15:39:55.990Z · capability=adhoc · ok=false · 0s · artifacts=0 · run=20260919-153955-de9b09
+- 2026-09-19T15:32:21.693Z · capability=adhoc · ok=false · 900s · artifacts=0 · run=20260919-153221-059faf
