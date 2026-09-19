@@ -1132,6 +1132,129 @@ process.stdout.write('\nworkers\n')
     assert.ok(Array.isArray(res.suggestions))
   })
 
+  await testAsync('default probes satisfy each seeded card\'s own pre-flight', async () => {
+    // Regression, found by running verify against the live instance: the default
+    // probe only filled inputs that DECLARE a default, so a card requiring
+    // `prompt` (image.generate) could never pass its own pre-flight — the check
+    // reported MISSING_INPUTS and never reached a real call. Every generative
+    // capability has that shape, so this was the common case.
+    //
+    // The spawner here always fails. Reaching it at all is the assertion: a
+    // pre-flight failure returns EARLY and never spawns.
+    const ws = tmpdir('probe-inputs')
+    const seeded = catalog.bootstrap(ws)
+    assert.ok(seeded.created.length > 0, 'seeds expected')
+    const loaded = catalog.loadCatalog(ws, { bootstrap: false })
+    const workers = createWorkers({
+      spawn: async () => {
+        throw new Error('PROBE-PASSED-PREFLIGHT')
+      },
+      defaultWorkspace: ws,
+    })
+    for (const card of loaded.cards) {
+      let res
+      try {
+        res = await workers.skillVerify({ workspace: ws, id: card.id })
+      } catch (error) {
+        // Reaching the spawner IS the assertion: a pre-flight failure returns
+        // early with phase 'preflight' and never spawns.
+        assert.match(
+          error.message,
+          /PROBE-PASSED-PREFLIGHT/,
+          `card "${card.id}" failed before spawning: ${error.message}`,
+        )
+        continue
+      }
+      assert.notEqual(
+        res.phase,
+        'preflight',
+        `card "${card.id}" must not fail its own pre-flight with default probes: ${res.error}`,
+      )
+    }
+  })
+
+  await testAsync('a card needing a required prompt can still be probed', async () => {
+    const ws = tmpdir('probe-required-prompt')
+    fs.mkdirSync(path.join(ws, '.dsh-codex', 'capabilities'), { recursive: true })
+    fs.writeFileSync(
+      path.join(ws, '.dsh-codex', 'capabilities', 'needs.prompt.md'),
+      '---\nid: needs.prompt\ndescription: requires a prompt\ninputs:\n  - name: prompt\n    required: true\n---\n做 {{prompt}}\n',
+      'utf8',
+    )
+    const workers = createWorkers({
+      spawn: async () => {
+        throw new Error('PROBE-PASSED-PREFLIGHT')
+      },
+      defaultWorkspace: ws,
+    })
+    let res
+    try {
+      res = await workers.skillVerify({ workspace: ws, id: 'needs.prompt' })
+    } catch (error) {
+      assert.match(error.message, /PROBE-PASSED-PREFLIGHT/, `failed before spawning: ${error.message}`)
+      return
+    }
+    assert.notEqual(res.phase, 'preflight', `a required "prompt" must get a probe value: ${res.error}`)
+  })
+
+  await testAsync('skillVerify actually runs THE CARD, not an ad-hoc task', async () => {
+    // Regression: skillVerify called doRun without forwarding `card`, so the
+    // "verification" fell into the ad-hoc branch and ran a generic task instead
+    // of the card's own prompt — while `verify: true` suppressed the guard that
+    // exists to prevent exactly that. The run also took its sandbox from the
+    // caller instead of the card (observed: danger-full-access on a card that
+    // declares workspace-write). The check reported on something other than the
+    // capability under test and looked like a pass.
+    const ws = tmpdir('verify-uses-card')
+    fs.mkdirSync(path.join(ws, '.dsh-codex', 'capabilities'), { recursive: true })
+    fs.writeFileSync(
+      path.join(ws, '.dsh-codex', 'capabilities', 'probe.card.md'),
+      [
+        '---',
+        'id: probe.card',
+        'description: card that must be used verbatim',
+        'sandbox: read-only',
+        'inputs:',
+        '  - name: prompt',
+        '    required: true',
+        '---',
+        'CARD-MARKER-PROMPT {{prompt}}',
+      ].join('\n'),
+      'utf8',
+    )
+
+    const captured = []
+    const workers = createWorkers({
+      spawn: async (spec) => {
+        captured.push(spec)
+        return {
+          exitCode: 0,
+          signal: null,
+          elapsedMs: 5,
+          timedOut: false,
+          stdout: [
+            '{"type":"thread.started","thread_id":"t1"}',
+            '{"type":"turn.started"}',
+            '{"type":"item.completed","item":{"id":"i","type":"agent_message","text":"ok"}}',
+            '{"type":"turn.completed"}',
+          ].join('\n'),
+          stderr: '',
+        }
+      },
+      defaultWorkspace: ws,
+    })
+
+    const res = await workers.skillVerify({ workspace: ws, id: 'probe.card', probeInputs: [{ prompt: 'X' }] })
+    assert.equal(res.ok, true, `verify should succeed: ${res.error || res.diagnosis || ''}`)
+    assert.equal(captured.length, 1, 'exactly one real call expected')
+
+    // The card's own prompt text must have reached the child on stdin.
+    assert.match(captured[0].stdin, /CARD-MARKER-PROMPT/, "the card's own prompt must be sent")
+    // The sandbox must come from the CARD, not from the caller.
+    const sIdx = captured[0].argv.indexOf('-s')
+    assert.equal(captured[0].argv[sIdx + 1], 'read-only', "sandbox must come from the card")
+  })
+
   process.stdout.write(`\n${passed} passed, ${failures.length} failed\n`)
   if (failures.length > 0) {
     process.stdout.write('\nfailures:\n')
