@@ -1,218 +1,246 @@
 # dsh-codex-connector
 
-把 **Codex CLI** 接到 **DeepSeek Harness** 上：让 DSH 通过对话或自动路由调用 Codex 做功能设计、出图、产出美术素材、代码评审等，并把产物回收进工作区。
+让 **DeepSeek Harness（DSH）** 学会使用 **Codex**。
 
-架构决策、实测数据与自审记录见同仓的 `DESIGN.md`。本文件是使用与排错手册。
+装好之后，你在 DSH 里说一句「帮我画一张网站首页配图」，DSH 就会把这件事交给 Codex 去做，等 Codex 出完图，**图片自动出现在你的项目目录里**，DSH 把文件路径告诉你。
+
+不需要记命令，不需要切窗口，也不用手动搬文件。
+
+> English version: [README.en.md](./README.en.md)
+> 开发与维护请看 [`docs/`](./docs/) 目录。
 
 ---
 
-## 它解决什么问题
+## 目录
 
-直接让 DSH 跑一条 `codex exec` 命令是行不通的，也不是好设计：
+- [它能做什么](#它能做什么)
+- [装之前需要什么](#装之前需要什么)
+- [安装](#安装)
+- [怎么用](#怎么用)
+- [图片放在哪](#图片放在哪)
+- [DSH 会自动帮你建项目说明](#dsh-会自动帮你建项目说明)
+- [让它学会新本事](#让它学会新本事)
+- [常见问题](#常见问题)
+- [安全与隐私](#安全与隐私)
 
-| 问题 | 实测证据 | 本项目的做法 |
+---
+
+## 它能做什么
+
+装好后 DSH 多了四项现成能力：
+
+| 你说的话 | DSH 会做什么 | 大概耗时 |
 |---|---|---|
-| Codex 需要写自己的 `~/.codex`（app-server socket、tmp、多个 sqlite），而会话文件沙箱禁止工作区外写入 | `Error: failed to initialize in-process app-server client: 拒绝访问。 (os error 5)` | 执行层走**宿主侧 `ctx.subprocess`**（宿主执行世界），而不是让模型拼 shell |
-| 出图产物落在 `$CODEX_HOME/generated_images/<run-dir>/`，而 `<run-dir>` **不等于** thread_id | 目录 `01a0a0f7-…` vs thread `01a0a0f5-…` | 运行前后目录快照 diff + 采纳 agent 回报的路径 |
-| JSONL 里的传输告警**不代表失败**，且有两种形态 | 一次成功运行里既有 4 条 `Reconnecting…`，又有一条 item 包裹的 WebSocket 回退 | 按**语义**分类，不按事件形态 |
-| 项目级 `.codex/config.toml` 默认**不生效**（信任门禁），但 `AGENTS.md` 不受影响 | 不可信 → model 仍是用户级值；加 trusted → 项目值生效 | 知识走 `AGENTS.md`，执行策略才需要授权，并如实报告 |
-| 二进制路径会随升级变化（按哈希命名的目录） | 本机有两个副本：`…/Codex/bin/bffc…/codex.exe` 与 `~/.codex/plugins/.plugin-appserver/codex.exe` | 有序探测 + 配置覆盖，绝不硬编码 |
+| 「帮我画一张金色怀表的写实特写，用在首页」 | 交给 Codex 出图，图片放进你项目的 `assets/generated/` | 3–4 分钟 |
+| 「给这个项目做一套三个图标的素材」 | 一次会话里连着出多张，尽量保持风格统一 | 每张约 3 分钟 |
+| 「设计一下多租户配额系统的方案」 | 让 Codex 用更强的模型写一份可评审的设计方案 | 2–3 分钟 |
+| 「评审一下我这次的改动」 | Codex 只读地检查代码，按严重程度列出问题 | 2–3 分钟 |
+
+除了这四项，你还可以**教它新本事**（见[让它学会新本事](#让它学会新本事)），而且这个「教」的过程可以交给 DSH 自己做。
+
+### 几个你该知道的实话
+
+我们把这些写在最前面，免得你踩坑：
+
+- **每次调用至少 2 分钟。** 这是 Codex 的推理时间，不是卡住了。别用它做「跑一条命令看看输出」这种小事。
+- **出图的尺寸不总是你要求的那个。** 你要 1024×1024，可能得到 1254×1254。这是 Codex 内置画图工具的行为，不是配置错了。
+- **一套多张的素材，风格只能做到「接近统一」。** 圆角大小、元素占比这些在不同张之间会有肉眼可见的偏差。这是这类工具的固有特性，不是坏了。
+- **调用期间 DSH 会一直等着。** 它不会转到后台。图片多的时候请分几次说，别一次让它出十张。
+
+---
+
+## 装之前需要什么
+
+| 需要 | 怎么确认 |
+|---|---|
+| **Codex 已安装并且登录过** | 在终端跑 `codex --version` 有输出，再跑 `codex login status` 显示已登录 |
+| **DSH 能正常运行** | 你能打开这个界面就说明没问题 |
+| **Node.js 20 或更高** | 终端跑 `node -v` 看版本号 |
+
+> 本项目**自己不需要装任何依赖包**。这是刻意的设计：它可以稳定地加载，不会因为缺一个小包而整个失效。
 
 ---
 
 ## 安装
 
+在**本项目目录**里打开终端，依次执行：
+
 ```bash
-# 1) 看变更计划（不写任何东西）
+# 第 1 步：先看看会改什么（这一步不会写任何东西）
 node scripts/install.mjs --profile web
 
-# 2) 确认后写入（会自动备份，失败即还原）
+# 第 2 步：确认没问题，真正写入
 node scripts/install.mjs --profile web --apply
 
-# 3) 链接依赖
+# 第 3 步：连接依赖
 cd "$DSH_HOME/profiles/web" && pnpm install
 
-# 4) 重启 DSH
+# 第 4 步：重启 DSH
 ```
 
-卸载：
+第 1 步是**试运行**，它只会打印一份变更清单。看清楚再执行第 2 步——那一刻起才开始真正改动你的配置。
 
-```bash
-node scripts/install.mjs --profile web --uninstall --apply
-```
+安装脚本只改两个文件，而且**改之前都会先备份**，中途出错会自动还原：
 
-安装脚本只改三处，且每处都先备份：
+- `profiles/web/package.json` —— 增加一条指向本项目的依赖
+- `profiles/web/cordis.patch.yml` —— 增加一行插件声明
 
-- `$DSH_HOME/profiles/<profile>/package.json` —— 增加一条 `link:` 依赖
-- `$DSH_HOME/profiles/<profile>/cordis.patch.yml` —— 增加一行 `tool-codex-connector`
-- **绝不**修改 shipped bundle（`dsh-base` / `dsh-web-app`）或 shipped preset
+它**不会**碰 DSH 自带的任何文件。
 
-安装后可以验证（**必须在该 profile 目录里运行**，这样模块解析基准与加载器一致）：
+### 想让每个新会话都有这些工具
 
-```bash
-cd "$DSH_HOME/profiles/web"
-node <本仓库>/scripts/verify-install.mjs
-```
-
-它回答四个安装本身无法确认的问题：包能否从 profile 解析到、解析出的入口是否具备加载器采纳的形状（`name` / `apply` / `inject`）、patch 文件是否是**单一合法的根序列且行被正确包裹**、依赖是否是本地链接（改动即时生效而无需重新打包）。
-
-### patch 行的格式很容易写错 ⚠️
-
-加载器对 patch 条目的语义是二选一的：
-
-| 写法 | 含义 |
-|---|---|
-| `- insert:` 包裹 | 这是**新增**行（包裹层不带 `id` 时，把内部行追加到根列表） |
-| 顶层 `- id: <x>` | 这是**覆盖既有行**，`x` 必须已存在 |
-
-所以新增一行**必须**写成：
-
-```yaml
-- insert:
-    - id: tool-codex-connector
-      name: 'dsh-codex-connector'
-```
-
-写成顶层 `- id: tool-codex-connector` / `name: ...` 时，加载器会认为你要覆盖一个不存在的行，打印
-`patch: entry "tool-codex-connector" not found` 然后**整行跳过**——插件不会挂载，而
-`cordis.patch.yml` 看起来「明明写了」。这个错误真实发生过一次，且当时所有更弱的检查都通过了。
-
-判断是否真的生效，用官方诊断（它会打印**组合后**的树）：
-
-```bash
-dsh --profile web --dump-config | Select-String 'tool-codex-connector'
-```
-
-若能搜到该行且开头没有 `patch: entry ... not found` 警告，才算真正进入组合。
-
-### 让会话真正拿到工具
-
-上面的 patch 把 **service 层**挂在 host 面。工具行属于 agent 面，需要加到一个 preset 上。推荐让脚本复制一个 shipped preset 再改副本：
+上面装好后，工具是**按会话**提供的。要让新开的会话也能用，需要把它挂到一个「预设」上。让脚本帮你复制一份自带预设再改副本：
 
 ```bash
 node scripts/install.mjs --profile web --preset standard --apply
 ```
 
-之后在新会话里选择该 preset 即可看到 `codex_*` 工具。
+之后新建会话时选这个预设即可。
 
-> 为什么 service 在 host 面：同一工作区的并发串行化必须**进程级**生效，否则多个会话各自持有队列，等于没有限制。
+### 检查装好了没
 
-### 零依赖
-
-本包**没有任何运行时依赖**（frontmatter 解析器是自带的）。这样它能在 profile 的模块解析环境里确定地加载，不会因为缺一个包而整行挂掉。
-
-### 不想重启？先用动态插件
-
-如果只想马上试、不想动 profile，可以用一个动态 Cordis 插件把工具挂进**当前会话**。
-它不复制实现，而是调用本包的**真实 worker**：
-
-```javascript
-// cordis_define 的 host 半边（要点摘录）
-const PKG = '<本包绝对路径>'
-const WORKER = PKG + '\\lib\\workers\\worker.js'
-const spec = { tool: 'codexDo', args: { task, workspace } }
-const handle = ctx.subprocess.spawn({
-  argv: [node, WORKER, JSON.stringify(spec)],
-  cwd: workspace,
-  stdio: { stdin: 'ignore', stdout: { maxBytes: 4 * 1024 * 1024 }, stderr: { maxBytes: 512 * 1024 } },
-  graceMs: 5000,
-})
-// 等 handle.done 后用 handle.collected.stdout.readFrom(0) 取 JSON
+```bash
+cd "$DSH_HOME/profiles/web"
+node <本项目路径>/scripts/verify-install.mjs
 ```
 
-验证的是**同一份代码**，不会出现「临时能跑、落盘就坏」的分叉。缺点是进程重启即失效——长期使用仍建议走上面的 profile 安装。
+看到 `INSTALL VERIFIED` 就是成功了。它会检查四件事：包能不能被找到、入口是否合格、配置文件是否合法、依赖是否为本地链接。
+
+### 卸载
+
+```bash
+node scripts/install.mjs --profile web --uninstall --apply
+```
+
+同样会先备份、失败即还原。
 
 ---
 
-## 用法
+## 怎么用
 
-DSH 侧看到 6 个工具：
+**大多数时候你什么都不用记，直接用大白话说就行。**
 
-| 工具 | 用途 |
+DSH 看到 6 个工具，但通常只有两个你需要关心：
+
+| 工具 | 什么时候用 |
 |---|---|
-| `codex_status` | 健康检查：定位到哪个二进制、版本、是否登录、能力卡数量、项目是否已注册/可信 |
-| `codex_project` | `status` / `register` / `refresh` / `grant-trust` / `revoke-trust` |
-| `codex_capabilities` | 列出/检索/查看能力卡 |
-| `codex_skill_write` | 新增或修订一张能力卡（自扩展写入端） |
-| `codex_skill_verify` | 跑一次受控真实调用验证能力卡 |
-| `codex_do` | 执行入口：给能力 id 或自然语言任务 |
+| `codex_do` | 让 Codex 干活。你只需要给它一句话 |
+| `codex_status` | 觉得不对劲时，先跑这个看健康状况 |
 
-### 典型调用
+其余的（`codex_capabilities`、`codex_skill_write`、`codex_skill_verify`、`codex_project`）是给 DSH 自己用的，你不需要直接调用。
+
+### 直接说人话
 
 ```
-# 画图（自动路由到 image.generate）
-codex_do { task: "帮我画一张金色怀表的写实特写，用作首页 hero" }
-
-# 强制走某张卡，并传参数
-codex_do { capability: "image.generate", inputs: { prompt: "…", count: "3", size: "1536x1024" } }
-
-# 高级模型做设计
-codex_do { task: "设计一下多租户配额系统的方案" }      # → design.spec
-
-# 代码评审
-codex_do { capability: "code.review", inputs: { scope: "uncommitted" } }
-
-# 绕过目录，直接把原始任务丢给 Codex
-codex_do { mode: "force", task: "解释这个仓库的构建流程" }
-
-# 延续上一次会话（同一能力的 thread）
-codex_do { capability: "design.spec", continueThread: true, task: "按上面的方案，把第 3 点展开" }
+帮我画一张网站首页的配图，深蓝色调，简洁一点
 ```
 
-### 无匹配时的行为
+DSH 会自己判断这是「出图」，找到对应的能力，把活交给 Codex，然后告诉你图片在哪。
 
-`codex_do` **不会猜**。没有命中任何能力卡时它返回目录清单并让你决定：要么 `mode: "force"` 直接下发任务，要么先写一张能力卡。这是刻意的——猜测路由会产生难以复现的错误结果。
+### 想说得更精确
+
+如果你想要多张、指定尺寸，可以直接说或者让 DSH 用参数：
+
+```
+帮我出 3 张图标，1024x1024
+```
+
+### 它不认识你的需求时
+
+如果 DSH 告诉你「没有匹配的能力」，**这是正常的，不是出错**。
+
+DSH 不会瞎猜你的意思——猜错会产生「看起来成功了、其实答非所问」的结果，而且很难复现。它会给你两个选择：
+
+1. 换种说法再试一次（可能只是措辞和能力卡的关键词没对上）
+2. 让 DSH 把任务原样交给 Codex 处理，或者干脆教它一个新能力
 
 ---
 
-## 项目注册：`<workspace>/.codex/`
+## 图片放在哪
 
-首次在某工作区调用时，控制器会把该工作区登记为 Codex 项目：
+出图完成后，图片会被放进：
 
 ```
-<workspace>/
-├── AGENTS.md                   ← 项目指令（**已存在则绝不修改**）
-└── .codex/                     ← 项目根标志 + 项目信息
-    ├── config.toml             ← Codex 读；含 project_root_markers
+<你的项目>/assets/generated/
+```
+
+文件名是语义化的，比如 `hero-ai-coding-assistant.png`，而不是一串乱码。
+
+DSH 回复里会给出**完整路径**，同时也会告诉你 `recovered` 字段——如果那里是空的，说明 Codex 自己就把文件放好了；如果非空，说明是连接器帮它搬进来的。两种情况你都拿到了文件。
+
+> 同名文件不会被覆盖。重名时会自动加版本后缀，比如 `hero.png` 变成 `hero-v2.png`。
+
+---
+
+## DSH 会自动帮你建项目说明
+
+第一次在某个项目里使用 Codex 时，连接器会在项目里建一个 `.codex/` 文件夹，里面是**给 Codex 看的项目说明**：
+
+```
+<你的项目>/
+├── AGENTS.md              ← 项目约定（如果已经有了，绝不会被改）
+└── .codex/
     ├── project/
-    │   ├── PROJECT.md          ← 技术栈、常用命令、目录结构（自动探测）
-    │   ├── CAPABILITIES.md     ← 能力清单与产物约定（由能力卡生成）
-    │   └── HISTORY.md          ← 追加式运行历史
-    └── dsh/                    ← 说明与绑定信息
+    │   ├── PROJECT.md     ← 技术栈、常用命令、目录结构（自动探测）
+    │   ├── CAPABILITIES.md← 这个项目能用哪些 Codex 能力
+    │   └── HISTORY.md     ← 每次运行的记录
+    └── dsh/               ← 说明这个文件夹是干什么的
 ```
 
-控制面状态在 `.dsh-codex/`（能力卡、运行记录、健康计数），本机可重建。
+**这样做的好处**：Codex 每次开工前会先读这些文件，不用你反复交代项目背景。
 
-### 三个不变量
+### 三条承诺
 
-1. **根 `AGENTS.md` 存在即冻结。** 它同时是 DSH 自己的指令来源（host 组合的 `agent-instructions` 行会读它）。改写它等于静默改掉 DSH 的提示词。仅在文件不存在时创建，且只写指针。
-2. **`.codex/config.toml` 只补缺失键。** 已存在则完全不动——它是用户的文件。
-3. **外来 `.codex/` 未经确认不写入。** 检测到不是我们创建的目录时，`register` 返回 `needsAdoption: true`，需要显式 `adopt: true`。
+1. **你已有的 `AGENTS.md` 不会被改。** 一个字都不会动。只有文件不存在时才会创建。
+2. **你已有的 `.codex/config.toml` 不会被改。** 它是你的文件。
+3. **不是我们建的 `.codex/` 不会被写。** 检测到陌生的目录时，DSH 会先问你。
 
-### 关于「可信」与 `configEffective`
+### 关于「可信项目」
 
-Codex 会把项目级 `.codex/config.toml` **完全忽略**，除非该项目在用户级配置里被标记为可信：
+Codex 有个安全机制：**项目里的执行策略配置默认不生效**，除非你在自己的 Codex 配置里把这个项目标记为「可信」。
 
-```toml
-# ~/.codex/config.toml
-[projects.'f:\your\project']
-trust_level = "trusted"
+这听起来麻烦，但影响没那么大：
+
+| 内容 | 需不需要标记可信 |
+|---|---|
+| 项目说明、技术栈、能力清单 | **不需要**，立刻生效 |
+| 执行策略（沙箱级别、模型选择等） | 需要 |
+
+所以即使你没做任何标记，**Codex 也已经知道了你的项目背景**。要开启执行策略，让 DSH 跑：
+
+```
+codex_project { action: "grant-trust" }
 ```
 
-因此 `codex_project` 的报告里有两个独立字段：
+它会**先征求你同意**（因为这改的是你的全局 Codex 配置），改之前备份、改之后校验、失败就还原。撤销用 `action: "revoke-trust"`。
 
-- `configEffective` —— 项目级**执行策略**是否真的生效（需要可信）
-- 项目**知识**（`AGENTS.md` / `.codex/project/`）不受影响，始终生效
-
-控制器**绝不会**自己写你的用户级配置。需要时用 `codex_project action=grant-trust` 显式授权（写入前备份、写入后校验、失败即还原、提供对称的 `revoke-trust`）。
-
-> 注意：Codex 自己也可能在运行中往 `~/.codex/config.toml` 追加 trust 条目（实测发生过）。所以可信状态**每次都重新读取**，不缓存。
+> 连接器**永远不会**偷偷改你的全局配置。如果 DSH 告诉你没有审批通道，它会拒绝写入并给你手工添加的方法。
 
 ---
 
-## 能力卡：扩展点
+## 让它学会新本事
 
-一张卡 = 一个 Markdown 文件，放在 `<workspace>/.dsh-codex/capabilities/<id>.md`，人可读、可 diff、可进 git。
+这是这个项目最有意思的部分：**你可以教它，DSH 也可以自己教自己。**
+
+### 你来说，DSH 来教
+
+```
+帮我加一个能力：把长文生成信息图
+```
+
+DSH 会：
+
+1. 先查现有能力，确认确实没有
+2. 看看 Codex 那边有没有现成的技能可以用
+3. 写一张能力卡
+4. **跑一次真实调用验证它确实能用**
+5. 告诉你结果，包括验证证据
+
+以后你说类似的话，它就直接会了。
+
+### 能力卡长什么样
+
+就是项目里一个普通的 Markdown 文件，放在 `.dsh-codex/capabilities/`，你可以用任何编辑器打开修改：
 
 ```markdown
 ---
@@ -220,111 +248,119 @@ id: image.generate
 title: 生成图片
 description: 需要 AI 生成的位图素材时使用。
 triggers: [画一张图, 生成图片, 出图, 美术素材]
-engine: codex-exec
-sandbox: workspace-write            # read-only | workspace-write | danger-full-access
-skills: [imagegen]                  # 期望 Codex 命中的 skill，会写进 prompt 硬约束
-output: paths
-timeoutMs: 900000
+sandbox: workspace-write
 artifacts:
   patterns: ["$CODEX_HOME/generated_images/**/*.png"]
   collectTo: assets/generated
 inputs:
   - name: prompt
     required: true
-  - name: count
-    required: false
-    default: "1"
 ---
 
-用 `imagegen` skill 出图：{{prompt}}，共 {{count}} 张。
-出图后把选中的图复制到 assets/generated/，文件名语义化，不要覆盖已有文件。
-最后逐行列出实际写入的文件绝对路径。
+用 imagegen skill 出图：{{prompt}}
+出图后把文件复制到 assets/generated/，文件名语义化。
+最后逐行列出实际写入的文件路径。
 ```
 
-- `{{name}}` 从 `inputs` 取值；**必填项缺失或占位符未填会立刻失败**，不会把半成品 prompt 送出去。
-- `sandbox: danger-full-access` 写在卡片里**不构成授权**，必须调用时显式传 `sandbox`。
-- 内置 4 张种子卡（`image.generate` / `design.spec` / `code.review` / `art.assets`）在首次使用时复制进项目；**复制后就是项目文件，包升级不会覆盖**。
+它有几个好处：**人能读懂**、**能进 git**、**改坏了能看出哪里坏了**。
 
-### 自扩展闭环
+字段含义、范例和常见错误见 [`docs/`](./docs/) 目录里的开发文档。
 
-```
-① codex_do 未命中
-② 先查目录与 Codex 侧真实资产（skills / plugins）
-③ 分类：薄封装既有 skill ｜ 或写 prompt 级流程
-④ codex_skill_write 落盘能力卡（项目级）
-⑤ codex_skill_verify 跑一次真实 probe
-⑥ 下次同类任务直接命中
-```
+### 不会退化成垃圾堆
 
-防劣化护栏：同名覆盖而非新建 · 先查后写（`overwrite` 必须显式）· 写后必验（未验证为 `draft`）· 连续失败 3 次自动降级 `needs-review` 并退出 auto 选择 · 变更留痕（`HISTORY.md` + `runs/<id>/`）。
+自己教自己听起来容易失控，所以有几道护栏：
+
+- **同名是修订，不是新建。** 不会攒出十张差不多的卡。
+- **改已有的卡必须先读。** 防止盲目覆盖。
+- **新卡必须验证过才算数。** 没验证的是「草稿」，不会被自动选中。
+- **连续失败 3 次就自动停用。** 不会反复踩同一个坑。
+- **每次改动都有记录。** 在 `HISTORY.md` 和 `runs/` 里能查到。
 
 ---
 
-## 排错
+## 常见问题
 
-| 症状 | 原因 | 处理 |
-|---|---|---|
-| `Codex CLI not found` | 探测全部未命中 | 用 `codex_status` 看 `probes`；在 `.dsh-codex/config.json` 里设 `codexBinary` |
-| `failed to initialize in-process app-server client: 拒绝访问。 (os error 5)` | 执行层没走宿主 `subprocess`，被文件沙箱拦了 | 确认插件在 host 面加载；不要用会话里的 `pwsh` 直接调 Codex |
-| 运行成功但报告 `ok:false` 且 errors 里有 WebSocket/Reconnecting 字样 | 事件分类过严（旧 bug） | 已修：传输通知按语义归为 warning。升级到包含该修复的版本 |
-| `configEffective: false` | 项目未被标记可信 | 项目知识仍然生效；需要执行策略时 `codex_project action=grant-trust` |
-| 出图成功但工作区没有文件 | 制品未被回收 | 检查 `result.artifactSources` 与 `.dsh-codex/runs/<id>/result.json`；能力卡的 `artifacts.patterns` 是否匹配 |
-| 每次调用都要 2 分钟以上 | 当前网络下 WebSocket 握手超时后回退 HTTPS（实测 118–126s） | 正常现象。工具调用是**同步阻塞**的（见下），所以批量任务请拆成多次调用，并在开始前告知用户预期耗时 |
-| 任务被报 `timed out ... and was terminated` | 超过 `timeoutMs`（默认 15 分钟）被杀 | 结果可能被截断，且**不会**被当成成功。提高 `timeoutMs` 或拆小任务 |
-| 模型报 `not supported when using Codex with a ChatGPT account` | 能力卡里的 `model` 用了账号不可用的模型 | 把卡片 `model` 留空以继承默认 |
-| `.codex/` 被判为外来目录 | 既有目录非本工具创建 | 确认内容后 `codex_project { action: "register", adopt: true }` |
-| **重启后插件列表里看不到它** | 多半是 patch 行写成了顶层 `- id:`，被当成覆盖不存在的行而跳过 | 跑 `dsh --profile web --dump-config`，若出现 `patch: entry "tool-codex-connector" not found` 就是这个原因。改成 `- insert:` 包裹（见「patch 行的格式很容易写错」），然后重启 |
-| 重启后工具仍不出现 | 工具行属于 agent 面，patch 只挂了 host 面的 service | 用 `--preset` 复制一个 preset 并加上工具行（见「让会话真正拿到工具」） |
-| `--dump-config` 报 `EPERM ... cordis.yml` | 它需要重写 profile 根文件；受限沙箱下会被拒 | 这不是配置错误，用有权限的终端跑即可 |
-| `grant-trust` 返回 `no-approval-channel` | 该部署没有审批通道，且写入你的全局配置必须经同意 | 按提示手工加入该条目；或让用户在配置里允许 |
-| **工具报 `returned invalid output: value is not lossless JSON`** | 工具返回值里有 `undefined`。**注意这条报错会指向错误的层**：它也可能由「参数声明为必填而调用方合理地省略了」触发 | 升级到已修版本（返回值在工具边界统一净化；`codex_do` 的 `task` 改为可选）。用 `npm run verify-boundary` 可以对着 harness 真实校验器复现 |
-| **每次调用都跑满 `timeoutMs` 后被终止**（伴随多条 `Reconnecting`） | 网络到 Codex 推理端点不通。**这不是插件故障** | 先跑 `codex doctor --summary` 看 `reachability` / `websocket` 两行，再直接测 TCP：`Test-NetConnection chatgpt.com -Port 443`。若 TCP 不通，插件无能为力——需要修网络（代理/VPN/防火墙/DNS） |
+### 说「画图」但它没反应
 
-> **关于后台运行**：本版本的工具调用是**同步**的——它不会返回 job id，也不接管后台作业。一次调用会一直阻塞到 Codex 退出或被 `timeoutMs` 杀掉。宿主侧的工具调用超时策略（`@deepseek-ai/dsh-tool-call-timeout-policy`）会在更外层生效。这一点在 README 里写清楚，是因为「长任务后台跑」曾经是一句没有实现支撑的承诺。
+先跑 `codex_status` 看健康状况。如果显示一切正常，可能只是措辞和能力卡的关键词没对上——试试说得更直白些，比如「帮我画一张图」而不是「生成一个视觉资产」。
 
----
+### 每次都要等好几分钟
 
-## 验证
+**这是正常的。** 当前网络环境下每次调用大约 118–126 秒起，出图更久。不是因为卡住了。
+
+### 提示 `timed out ... and was terminated`
+
+任务超时被终止了。**结果可能不完整，而且不会被当成成功**——这是刻意的，免得你拿到残缺结果却以为完成了。
+
+处理办法：把任务拆小，或者告诉 DSH 要更长的超时。
+
+### 出图成功了但项目里找不到文件
+
+让 DSH 跑 `codex_status`，或者查看运行记录：
+
+```
+<你的项目>/.dsh-codex/runs/<运行ID>/result.json
+```
+
+里面有完整的路径信息。
+
+### 尺寸不对
+
+要 1024×1024 得到 1254×1254——这是 Codex 内置画图工具的行为。**不用反复重试**，改了也一样。
+
+### 报 `not supported when using Codex with a ChatGPT account`
+
+能力卡里写了一个你的账号用不了的模型。让 DSH 把那张卡的 `model` 字段清空，就会用 Codex 的默认模型。
+
+### 重启后看不到插件
+
+多半是配置文件里的行格式写错了（一种很容易犯、而且不报错的错误）。让 DSH 跑：
 
 ```bash
-npm run selftest         # 离线自测：60 项，不联网、不调 Codex
-npm run live-check       # 真实链路：会真的调用 Codex（每次 2 分钟起）
-npm run verify-install   # 安装是否真的生效（在该 profile 目录里跑）
-npm run verify-boundary  # 对着 harness 真实校验器验证参数与工具返回值
+dsh --profile web --dump-config | Select-String 'tool-codex-connector'
 ```
 
-`live-check` 支持的开关：
+如果看到 `patch: entry ... not found`，就是这个问题。重新执行一次安装脚本即可修正。
 
-```bash
-node scripts/live-check.cjs --quick        # 只做定位/鉴权/注册/路由，不调 Codex
-node scripts/live-check.cjs --with-image   # 额外验证 imagegen 出图与制品回收
-node scripts/live-check.cjs --workspace <dir>
+### 每次调用都跑到超时
+
+**先确认不是网络问题。** 让 DSH 跑 `codex doctor --summary`，看 `reachability` 和 `websocket` 两行。也可以在终端直接测：
+
+```powershell
+Test-NetConnection chatgpt.com -Port 443
 ```
 
-`verify-boundary` 需要已安装的 Profile（它从那里加载 harness 包），可加 `--live` 跑一次真实出图：
+如果这里不通，是网络到不了 Codex 的服务器——连接器无能为力，需要修网络（代理、VPN、防火墙或 DNS）。
 
-```bash
-node scripts/verify-boundary.mjs --live
-```
+### 更多问题
 
-它验证两件事，都是离线自测无法覆盖的：
-
-1. **参数**：本插件注册的 `parameters` 是合法 JSON Schema，且**没有把可选参数错标为必填**——`codex_do` 的 `task` 曾经是必填，导致 `{ capability, inputs }` 这种完全合法的调用被拒。
-2. **返回值**：每个 worker 的真实结果都能通过 harness 的 `isJsonValue`（无损 JSON）。
-
-为什么要单独有它：那次失败的报错是 `returned invalid output: value is not lossless JSON`，**指向了错误的层**——真正的原因是参数必填性。只有对着**真实校验器**跑，才能把这两层区分开。
-
-离线自测覆盖了若干**只有在真实运行中才会暴露**的回归：种子卡 frontmatter 完整性、运行副作用创建 `.codex/` 导致的自我死锁、item 形态的传输通知误判为失败、超时被判为成功、工具返回值含 `undefined`、`danger-full-access` 授权边界。
+请看 [`docs/TROUBLESHOOTING.md`](./docs/TROUBLESHOOTING.md)，那里有更详细的诊断步骤。
 
 ---
 
-## 权限与安全
+## 安全与隐私
 
-- **环境变量收敛**：spawn 时只放行白名单变量，`DEEPSEEK_API_KEY` 等凭据**不会**传给 Codex（实测抑制 51 个无关变量）。
-- **沙箱由 Codex 自己执行**：本项目只传递 `-s`，不重写 Codex 的沙箱与审批语义。
-- **默认 `workspace-write`**：出图落盘够用，且不越界。`danger-full-access` 必须单次显式请求。
-- **不写用户级配置**：除显式 `grant-trust` 外，控制器不碰 `~/.codex/config.toml`。
+| 项 | 说明 |
+|---|---|
+| **不会泄露你的密钥** | 调用 Codex 时只传递必要的环境变量，DSH 自己的 API 密钥**不会**交给 Codex（实测过滤掉 51 个无关变量） |
+| **权限由 Codex 自己管** | 连接器只传递权限级别，不改变 Codex 的安全语义 |
+| **默认只允许改项目内文件** | 出图落盘够用，且不越界。更高权限必须在单次调用里明确要求 |
+| **不写你的全局配置** | 除了你明确同意的「标记可信项目」，连接器不碰 `~/.codex/config.toml` |
+| **不乱放文件** | 产物只落在项目的 `assets/generated/`，重名不覆盖 |
 
-## License
+---
+
+## 相关文档
+
+| 文档 | 给谁看 |
+|---|---|
+| [`README.en.md`](./README.en.md) | 英文版用户说明 |
+| [`docs/DEVELOPMENT.md`](./docs/DEVELOPMENT.md) | 想改代码、加功能的人 |
+| [`docs/DESIGN.md`](./docs/DESIGN.md) | 想了解设计取舍与实测依据的人 |
+| [`docs/TROUBLESHOOTING.md`](./docs/TROUBLESHOOTING.md) | 遇到问题、需要逐步诊断的人 |
+
+---
+
+## 许可证
 
 MIT
